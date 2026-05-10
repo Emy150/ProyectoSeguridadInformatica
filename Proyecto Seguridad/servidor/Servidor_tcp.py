@@ -3,6 +3,7 @@ os.system("")
 import threading
 import socket
 import datetime
+from Auth import registrar_usuario, login_usuario
 
 def obtener_ip_local():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -116,38 +117,99 @@ def receive():
             continue
 
         try:
-            usuario = cliente.recv(1024).decode("utf-8").strip()
+            datos = cliente.recv(1024).decode("utf-8").strip()
+
+            partes = datos.split("|")
+
+            if len(partes) != 3:
+                cliente.send("INVALIDFORMAT".encode("utf-8"))
+                cliente.close()
+                continue
+
+            accion, usuario, password = partes
+
         except:
             cliente.close()
             continue
 
+        # Validar nombre vacío
         if not usuario:
             cliente.send("INVALIDNAME".encode("utf-8"))
             cliente.close()
             log_event(f"Intento de conexión rechazado (nombre vacío) desde {direccion}")
             continue
 
+        # Evitar usuarios duplicados conectados
         if usuario in usuarios:
             cliente.send("NAMEINUSE".encode("utf-8"))
             cliente.close()
-            log_event(f"Intento de conexión rechazado (nombre duplicado): {usuario}")
+            log_event(f"Intento de conexión rechazado (usuario ya conectado): {usuario}")
             continue
 
-        cliente.send("OK".encode("utf-8"))
+        # =========================
+        # REGISTER
+        # =========================
+        if accion == "REGISTER":
+
+            ok, respuesta = registrar_usuario(usuario, password)
+
+            cliente.send(respuesta.encode("utf-8"))
+
+            if not ok:
+                log_event(f"Registro fallido para {usuario}")
+                cliente.close()
+                continue
+
+            log_event(f"Usuario registrado: {usuario}")
+
+        # =========================
+        # LOGIN
+        # =========================
+        elif accion == "LOGIN":
+
+            ok, respuesta = login_usuario(usuario, password)
+
+            cliente.send(respuesta.encode("utf-8"))
+
+            if not ok:
+                log_event(f"Login fallido para {usuario}")
+                cliente.close()
+                continue
+
+            log_event(f"Login exitoso: {usuario}")
+
+        else:
+            cliente.send("INVALIDACTION".encode("utf-8"))
+            cliente.close()
+            continue
+
+        # =========================
+        # ENTRAR AL CHAT
+        # =========================
+
         usuarios.append(usuario)
         clientes.append(cliente)
+
         color = COLORES[(len(usuarios)-1) % len(COLORES)]
         colores_usuarios[usuario] = color
 
         broadcast(f"ASSIGNCOLOR:{usuario}:{color}")
         broadcast(f"{usuario} se unió al chat")
+
         enviar_lista_usuarios()
+
         log_event(f"{usuario} se unió al chat desde {direccion}")
 
-        threading.Thread(target=handle, args=(cliente,), daemon=True).start()
+        threading.Thread(
+            target=handle,
+            args=(cliente,),
+            daemon=True
+        ).start()
+
 
 try:
     receive()
+
 except KeyboardInterrupt:
     print("\nServidor detenido correctamente.")
     server.close()

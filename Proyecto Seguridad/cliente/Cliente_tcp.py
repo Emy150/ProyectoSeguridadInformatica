@@ -37,11 +37,29 @@ def colorize_message(mensaje):
 
     return f"[{timestamp()}] {mensaje}"
 
-def conectar_con_nombre():
+def autenticar():
+
     while True:
-        usuario = input("Elige un nombre de usuario: ").strip()
-        if not usuario:
-            print("El nombre de usuario no puede estar vacío.")
+
+        print("\n=== AUTENTICACIÓN ===")
+        print("[1] Login")
+        print("[2] Registrar")
+        print("[3] Salir")
+
+        opcion = input("> ").strip()
+
+        if opcion == "3":
+            sys.exit()
+
+        if opcion not in ["1", "2"]:
+            print("Opción inválida.")
+            continue
+
+        usuario = input("Usuario: ").strip()
+        password = input("Contraseña: ").strip()
+
+        if not usuario or not password:
+            print("Completa todos los campos.")
             continue
 
         cliente = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -52,7 +70,21 @@ def conectar_con_nombre():
             print("No se pudo conectar al servidor.")
             continue
 
-        cliente.send(usuario.encode("utf-8"))
+        # =========================
+        # LOGIN
+        # =========================
+
+        if opcion == "1":
+            datos = f"LOGIN|{usuario}|{password}"
+
+        # =========================
+        # REGISTER
+        # =========================
+
+        else:
+            datos = f"REGISTER|{usuario}|{password}"
+
+        cliente.send(datos.encode("utf-8"))
 
         try:
             respuesta = cliente.recv(1024).decode("utf-8")
@@ -60,19 +92,44 @@ def conectar_con_nombre():
             cliente.close()
             continue
 
-        if respuesta == "NAMEINUSE":
-            print("Ese nombre ya está en uso.")
-        elif respuesta == "CHATFULL":
-            print("El chat está lleno.")
-        elif respuesta == "INVALIDNAME":
-            print("Nombre inválido.")
-        elif respuesta == "OK":
+        # =========================
+        # RESPUESTAS SERVIDOR
+        # =========================
+
+        if respuesta == "LOGINOK":
             print(f"Bienvenido {usuario}!")
             return cliente, usuario
 
-        cliente.close()
+        elif respuesta == "REGISTEROK":
+            print("Usuario registrado correctamente.")
+            print(f"Bienvenido {usuario}!")
+            return cliente, usuario
 
-cliente, usuario = conectar_con_nombre()
+        elif respuesta == "WRONGPASSWORD":
+            print("Contraseña incorrecta.")
+
+        elif respuesta == "NOUSER":
+            print("Ese usuario no existe.")
+
+        elif respuesta == "USEREXISTS":
+            print("Ese usuario ya existe.")
+
+        elif respuesta == "WEAKPASSWORD":
+            print("La contraseña es muy débil.")
+
+        elif respuesta == "INVALIDUSER":
+            print("Usuario inválido.")
+
+        elif respuesta == "NAMEINUSE":
+            print("Ese usuario ya está conectado.")
+
+        elif respuesta == "CHATFULL":
+            print("El chat está lleno.")
+
+        else:
+            print(f"Error: {respuesta}")
+
+        cliente.close()
 
 def recibir():
     buffer = ""
@@ -128,6 +185,7 @@ def escribir():
             cliente.close()
             break
 
+cliente, usuario = autenticar()
 threading.Thread(target=recibir, daemon=True).start()
 threading.Thread(target=escribir, daemon=True).start()
 
