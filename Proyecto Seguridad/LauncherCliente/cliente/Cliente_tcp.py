@@ -5,7 +5,8 @@
 # Ejecutar comandos del sistema
 import os
 os.system("")
-
+import rsa
+import base64
 # Conexión TCP/IP
 import socket
 
@@ -38,12 +39,14 @@ host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
 # Puerto del servidor
 puerto = 55555
 
-
+cliente_pub_key = None
+cliente_priv_key = None
+server_pub_key = None
 # =========================
 # SEGURIDAD
 # =========================
 
-def sanitizar_texto(texto, limite=500):
+def sanitizar_texto(texto, limite=200):
     """
     Limpia y valida textos recibidos.
     """
@@ -162,6 +165,7 @@ def autenticar():
     """
     Maneja login y registro de usuarios.
     """
+    global cliente_pub_key, cliente_priv_key, server_pub_key
 
     while True:
 
@@ -249,12 +253,41 @@ def autenticar():
         # Respuestas del servidor
         if respuesta == "LOGINOK":
 
-            print(f"Bienvenido {usuario}!")
+            print("Generando claves RSA (2048 bits)... Por favor espera.")
+            cliente_pub_key, cliente_priv_key = rsa.newkeys(2048)
+            
+            # Enviar clave pública al servidor
+            pub_pem = cliente_pub_key.save_pkcs1()
+            pub_b64 = base64.b64encode(pub_pem).decode('utf-8')
+            cliente.send(f"PUBKEY|{pub_b64}\nENDMSG\n".encode('utf-8'))
+            
+            # Recibir clave del servidor
+            resp = cliente.recv(4096).decode('utf-8')
+            if "SERVERPUBKEY|" in resp:
+                srv_pem_b64 = resp.split("SERVERPUBKEY|")[1].split("\nENDMSG\n")[0]
+                srv_pem = base64.b64decode(srv_pem_b64)
+                server_pub_key = rsa.PublicKey.load_pkcs1(srv_pem)
+            print("¡Conexión cifrada de extremo a extremo establecida!\n")
 
             return cliente, usuario
 
         elif respuesta == "REGISTEROK":
 
+            print("Generando claves RSA (2048 bits)... Por favor espera.")
+            cliente_pub_key, cliente_priv_key = rsa.newkeys(2048)
+            
+            # Enviar clave pública al servidor
+            pub_pem = cliente_pub_key.save_pkcs1()
+            pub_b64 = base64.b64encode(pub_pem).decode('utf-8')
+            cliente.send(f"PUBKEY|{pub_b64}\nENDMSG\n".encode('utf-8'))
+            
+            # Recibir clave del servidor
+            resp = cliente.recv(4096).decode('utf-8')
+            if "SERVERPUBKEY|" in resp:
+                srv_pem_b64 = resp.split("SERVERPUBKEY|")[1].split("\nENDMSG\n")[0]
+                srv_pem = base64.b64decode(srv_pem_b64)
+                server_pub_key = rsa.PublicKey.load_pkcs1(srv_pem)
+            print("¡Conexión cifrada de extremo a extremo establecida!\n")
             print("Usuario registrado correctamente.")
 
             print(f"Bienvenido {usuario}!")
@@ -330,15 +363,19 @@ def recibir():
             buffer += data
 
             while "ENDMSG" in buffer:
+                mensaje_crudo, buffer = buffer.split("ENDMSG", 1)
+                mensaje_crudo = mensaje_crudo.strip()
+                
+                if not mensaje_crudo:
+                    continue
 
-                mensaje, buffer = buffer.split(
-                    "ENDMSG",
-                    1
-                )
-
-                mensaje = sanitizar_texto(
-                    mensaje
-                )
+                # --- DESCIFRAR MENSAJE ---
+                try:
+                    msg_bytes = base64.b64decode(mensaje_crudo)
+                    mensaje_descifrado = rsa.decrypt(msg_bytes, cliente_priv_key).decode("utf-8")
+                    mensaje = sanitizar_texto(mensaje_descifrado)
+                except:
+                    continue # Si falla el descifrado, ignoramos el paquete
 
                 if not mensaje:
                     continue
@@ -469,14 +506,13 @@ def escribir():
                     f"{usuario}: {texto}"
                 )
 
-            cliente.send(
-                mensaje.encode("utf-8")
-            )
+            msg_cifrado = rsa.encrypt(mensaje.encode("utf-8"), server_pub_key)
+            msg_b64 = base64.b64encode(msg_cifrado).decode("utf-8")
+            
+            cliente.send((msg_b64 + "\nENDMSG\n").encode("utf-8"))
 
         except:
-
             cliente.close()
-
             break
 
 

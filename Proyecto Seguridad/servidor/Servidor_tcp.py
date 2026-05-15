@@ -5,7 +5,8 @@
 # Permite ejecutar comandos del sistema
 import os
 os.system("")
-
+import rsa
+import base64
 # Manejo de hilos para múltiples clientes
 import threading
 
@@ -23,7 +24,7 @@ from Auth import registrar_usuario, login_usuario
 # FUNCIONES DE SEGURIDAD
 # =========================
 
-def sanitizar_texto(texto, limite=500):
+def sanitizar_texto(texto, limite=200):
     """
     Limpia y valida textos recibidos.
     """
@@ -121,6 +122,9 @@ COLORES = [
 
 RESET = "\033[0m"
 
+print("Generando claves RSA del servidor (2048 bits)...")
+server_pub_key, server_priv_key = rsa.newkeys(2048)
+claves_clientes = {}
 
 # =========================
 # FUNCIONES AUXILIARES
@@ -144,17 +148,21 @@ def log_event(evento):
 
 def broadcast(mensaje):
     """
-    Envía mensajes a todos los clientes.
+    Cifra y envía mensajes a todos los clientes usando la clave pública de cada uno.
     """
-
     if isinstance(mensaje, str):
         mensaje = mensaje.encode("utf-8")
 
-    mensaje += b"\nENDMSG\n"
-
-    for cliente in clientes:
+    for i, cliente in enumerate(clientes):
         try:
-            cliente.send(mensaje)
+            usuario = usuarios[i]
+            pub_key = claves_clientes.get(usuario)
+            
+            if pub_key:
+                # Cifrar con la clave pública del cliente destino
+                msg_cifrado = rsa.encrypt(mensaje, pub_key)
+                msg_b64 = base64.b64encode(msg_cifrado)
+                cliente.send(msg_b64 + b"\nENDMSG\n")
         except:
             pass
 
@@ -180,17 +188,20 @@ def handle(cliente):
     while True:
 
         try:
-            mensaje = cliente.recv(1024)
+            # Aumentamos el buffer por el tamaño de Base64
+            mensaje_crudo = cliente.recv(2048).decode("utf-8")
 
-            if len(mensaje) > 1024:
-                raise Exception("Mensaje demasiado grande")
-
-            if not mensaje:
+            if not mensaje_crudo:
                 raise Exception("Socket cerrado")
 
-            mensaje = sanitizar_texto(
-                mensaje.decode("utf-8")
-            )
+            if "ENDMSG" in mensaje_crudo:
+                mensaje_crudo = mensaje_crudo.split("\nENDMSG\n")[0]
+
+            # Descifrar con la clave privada del servidor
+            msg_bytes = base64.b64decode(mensaje_crudo)
+            mensaje_descifrado = rsa.decrypt(msg_bytes, server_priv_key).decode("utf-8")
+
+            mensaje = sanitizar_texto(mensaje_descifrado)
 
             if not mensaje:
                 continue
@@ -221,13 +232,17 @@ def handle(cliente):
                         f"PRIV:{remitente}->{destino}:{texto}"
                     )
 
-                    clientes[idx_dest].send(
-                        mensaje_privado.encode("utf-8") + b"\nENDMSG\n"
-                    )
+                    # --- CIFRAR PARA EL DESTINATARIO ---
+                    pub_key_dest = claves_clientes.get(destino)
+                    if pub_key_dest:
+                        msg_cifrado_dest = rsa.encrypt(mensaje_privado.encode("utf-8"), pub_key_dest)
+                        clientes[idx_dest].send(base64.b64encode(msg_cifrado_dest) + b"\nENDMSG\n")
 
-                    cliente.send(
-                        mensaje_privado.encode("utf-8") + b"\nENDMSG\n"
-                    )
+                    # --- CIFRAR PARA EL REMITENTE (Para que se vea en su propia consola) ---
+                    pub_key_rem = claves_clientes.get(remitente)
+                    if pub_key_rem:
+                        msg_cifrado_rem = rsa.encrypt(mensaje_privado.encode("utf-8"), pub_key_rem)
+                        cliente.send(base64.b64encode(msg_cifrado_rem) + b"\nENDMSG\n")
 
                     log_event(
                         f"Mensaje privado: {remitente} → {destino}"
@@ -408,6 +423,23 @@ def receive():
         usuarios.append(usuario)
 
         clientes.append(cliente)
+
+        try:
+            # Recibir clave pública del cliente
+            msg_key = cliente.recv(2048).decode("utf-8")
+            if "PUBKEY|" in msg_key:
+                pem_b64 = msg_key.split("PUBKEY|")[1].split("\nENDMSG\n")[0]
+                claves_clientes[usuario] = rsa.PublicKey.load_pkcs1(base64.b64decode(pem_b64))
+                
+                # Enviar clave pública del servidor
+                srv_pub_b64 = base64.b64encode(server_pub_key.save_pkcs1()).decode('utf-8')
+                cliente.send(f"SERVERPUBKEY|{srv_pub_b64}\nENDMSG\n".encode('utf-8'))
+        except Exception as e:
+            print(f"Error en intercambio de claves con {usuario}: {e}")
+            usuarios.remove(usuario)   
+            clientes.remove(cliente)   
+            cliente.close()
+            continue
 
         color = COLORES[
             (len(usuarios)-1) % len(COLORES)
